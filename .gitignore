@@ -1,0 +1,34 @@
+# Unreal Engine generated folders
+/Binaries/
+/DerivedDataCache/
+/Intermediate/
+/Saved/
+
+# Generated project files
+/*.sln
+/*.suo
+/*.opensdf
+/*.sdf
+/*.VC.db
+/*.VC.opendb
+
+# Visual Studio
+/.vs/
+*.user
+*.userosscache
+*.sln.docstates
+
+# Rider / IntelliJ
+/.idea/
+
+# VS Code
+/.vscode/
+
+# Unreal Engine plugin generated folders
+/Plugins/*/Binaries/
+/Plugins/*/Intermediate/
+
+# Crash dumps and logs
+*.log
+*.dmp
+scene.spz
