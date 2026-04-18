@@ -11,5 +11,6 @@ public class spzdemoEditorTarget : TargetRules
 		DefaultBuildSettings = BuildSettingsVersion.V6;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_7;
 		ExtraModuleNames.Add("spzdemo");
+		ExtraModuleNames.Add("spzdemoEditor");
 	}
 }
