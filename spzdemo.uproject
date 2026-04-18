@@ -21,6 +21,10 @@
 			"Enabled": true
 		},
 		{
+			"Name": "SpzGaussianActorRebuild",
+			"Enabled": false
+		},
+		{
 			"Name": "ModelingToolsEditorMode",
 			"Enabled": true,
 			"TargetAllowList": [

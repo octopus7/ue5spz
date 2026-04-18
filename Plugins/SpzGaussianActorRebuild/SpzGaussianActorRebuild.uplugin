@@ -1,0 +1,23 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "SPZ Gaussian Actor Rebuild",
+	"Description": "Independent SPZ Gaussian actor import and rendering pipeline that avoids the legacy project paths.",
+	"Category": "Rendering",
+	"CreatedBy": "Codex",
+	"CanContainContent": false,
+	"EnabledByDefault": false,
+	"Modules": [
+		{
+			"Name": "SpzGaussianActorRebuild",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "SpzGaussianActorRebuildEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
