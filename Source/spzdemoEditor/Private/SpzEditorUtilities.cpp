@@ -6,6 +6,7 @@
 #include "AssetToolsModule.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "MaterialEditingLibrary.h"
 #include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
 #include "NiagaraConstants.h"
@@ -14,6 +15,8 @@
 #include "NiagaraEmitter.h"
 #include "NiagaraModule.h"
 #include "NiagaraNodeAssignment.h"
+#include "NiagaraRendererProperties.h"
+#include "NiagaraSpriteRendererProperties.h"
 #include "NiagaraSystem.h"
 #include "NiagaraSystemEditorData.h"
 #include "NiagaraSystemFactoryNew.h"
@@ -21,6 +24,15 @@
 #include "SpzNiagaraParameters.h"
 #include "SpzNiagaraPointCloudActor.h"
 #include "SpzPointCloudAsset.h"
+#include "Factories/MaterialFactoryNew.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInterface.h"
+#include "Materials/MaterialExpressionComponentMask.h"
+#include "Materials/MaterialExpressionConstant2Vector.h"
+#include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionSphereMask.h"
+#include "Materials/MaterialExpressionTextureCoordinate.h"
+#include "Materials/MaterialExpressionVertexColor.h"
 #include "UObject/Package.h"
 #include "ViewModels/NiagaraEmitterHandleViewModel.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
@@ -32,6 +44,7 @@
 namespace
 {
 	constexpr TCHAR NiagaraSystemAssetName[] = TEXT("NS_SPZPointCloud");
+	constexpr TCHAR PointSpriteMaterialAssetName[] = TEXT("M_SPZPointSprite");
 	constexpr TCHAR NiagaraBlueprintPrefix[] = TEXT("BP_");
 
 	constexpr TCHAR SimpleSpriteBurstEmitterPath[] = TEXT("/Niagara/DefaultAssets/Templates/Emitters/SimpleSpriteBurst.SimpleSpriteBurst");
@@ -40,7 +53,9 @@ namespace
 	constexpr TCHAR ParticleStateModulePath[] = TEXT("/Niagara/Modules/Update/Lifetime/ParticleState.ParticleState");
 	constexpr TCHAR SelectPositionFromArrayPath[] = TEXT("/Niagara/DynamicInputs/Arrays/SelectPositionFromArray.SelectPositionFromArray");
 	constexpr TCHAR SelectColorFromArrayPath[] = TEXT("/Niagara/DynamicInputs/Arrays/SelectLinearColorFromArray.SelectLinearColorFromArray");
+	constexpr TCHAR SelectVector4FromArrayPath[] = TEXT("/Niagara/DynamicInputs/Arrays/SelectVector4_FromArray.SelectVector4_FromArray");
 	constexpr TCHAR SelectVector2FromArrayPath[] = TEXT("/Niagara/DynamicInputs/Arrays/SelectVector2DFromArray.SelectVector2DFromArray");
+	constexpr TCHAR DefaultSpriteMaterialPath[] = TEXT("/Niagara/DefaultAssets/DefaultSpriteMaterial.DefaultSpriteMaterial");
 
 	FString MakeObjectPath(const FString& PackagePath, const FString& AssetName)
 	{
@@ -82,10 +97,22 @@ namespace
 		return Variable;
 	}
 
+	FNiagaraVariable GetDynamicMaterialParametersParameter()
+	{
+		static const FNiagaraVariable Variable = MakeUserParameter(FNiagaraTypeDefinition(UNiagaraDataInterfaceArrayFloat4::StaticClass()), SpzNiagaraParameters::DynamicMaterialParameters);
+		return Variable;
+	}
+
 	FNiagaraVariable GetSpriteSizesParameter()
 	{
 		static const FNiagaraVariable Variable = MakeUserParameter(FNiagaraTypeDefinition(UNiagaraDataInterfaceArrayFloat2::StaticClass()), SpzNiagaraParameters::SpriteSizes);
 		return Variable;
+	}
+
+	template <typename TExpression>
+	TExpression* CreateMaterialExpression(UMaterial& Material, int32 NodePosX, int32 NodePosY)
+	{
+		return Cast<TExpression>(UMaterialEditingLibrary::CreateMaterialExpression(&Material, TExpression::StaticClass(), NodePosX, NodePosY));
 	}
 
 	bool EnsureUserParameter(UNiagaraSystem& System, const FNiagaraVariable& Parameter, const uint8* DefaultValueData = nullptr)
@@ -190,8 +217,9 @@ namespace
 				const TArray<FNiagaraVariable>& AssignmentTargets = AssignmentNode->GetAssignmentTargets();
 				const bool bHasPosition = AssignmentTargets.ContainsByPredicate([](const FNiagaraVariable& Variable) { return Variable.GetName() == TEXT("Particles.Position"); });
 				const bool bHasColor = AssignmentTargets.ContainsByPredicate([](const FNiagaraVariable& Variable) { return Variable.GetName() == TEXT("Particles.Color"); });
+				const bool bHasDynamicMaterial = AssignmentTargets.ContainsByPredicate([](const FNiagaraVariable& Variable) { return Variable.GetName() == TEXT("Particles.DynamicMaterialParameter"); });
 				const bool bHasSpriteSize = AssignmentTargets.ContainsByPredicate([](const FNiagaraVariable& Variable) { return Variable.GetName() == TEXT("Particles.SpriteSize"); });
-				if (bHasPosition && bHasColor && bHasSpriteSize)
+				if (bHasPosition && bHasColor && bHasDynamicMaterial && bHasSpriteSize)
 				{
 					return ModuleItem;
 				}
@@ -207,6 +235,7 @@ namespace
 		{
 			INiagaraModule::GetVar_Particles_Position(),
 			INiagaraModule::GetVar_Particles_Color(),
+			INiagaraModule::GetVar_Particles_DynamicMaterialParameter(),
 			INiagaraModule::GetVar_Particles_SpriteSize()
 		};
 
@@ -214,6 +243,7 @@ namespace
 		{
 			FNiagaraConstants::GetAttributeDefaultValue(INiagaraModule::GetVar_Particles_Position()),
 			FNiagaraConstants::GetAttributeDefaultValue(INiagaraModule::GetVar_Particles_Color()),
+			FNiagaraConstants::GetAttributeDefaultValue(INiagaraModule::GetVar_Particles_DynamicMaterialParameter()),
 			FNiagaraConstants::GetAttributeDefaultValue(INiagaraModule::GetVar_Particles_SpriteSize())
 		};
 
@@ -264,7 +294,138 @@ namespace
 		return true;
 	}
 
-	bool ConfigurePointCloudNiagaraSystem(UNiagaraSystem& System)
+	bool ConfigurePointSpriteMaterial(UMaterial& Material)
+	{
+		Material.Modify();
+		Material.PreEditChange(nullptr);
+		Material.MaterialDomain = MD_Surface;
+		Material.BlendMode = BLEND_Translucent;
+		Material.SetShadingModel(MSM_Unlit);
+		Material.TwoSided = true;
+		Material.OpacityMaskClipValue = 0.0f;
+
+		bool bNeedsRecompile = false;
+		UMaterialEditingLibrary::SetMaterialUsage(&Material, MATUSAGE_NiagaraSprites, bNeedsRecompile);
+		UMaterialEditingLibrary::SetMaterialUsage(&Material, MATUSAGE_ParticleSprites, bNeedsRecompile);
+		UMaterialEditingLibrary::DeleteAllMaterialExpressions(&Material);
+
+		UMaterialExpressionVertexColor* VertexColor = CreateMaterialExpression<UMaterialExpressionVertexColor>(Material, -600, -200);
+		UMaterialExpressionComponentMask* ColorRgb = CreateMaterialExpression<UMaterialExpressionComponentMask>(Material, -420, -240);
+		UMaterialExpressionComponentMask* ColorAlpha = CreateMaterialExpression<UMaterialExpressionComponentMask>(Material, -420, -40);
+		UMaterialExpressionTextureCoordinate* TextureCoordinate = CreateMaterialExpression<UMaterialExpressionTextureCoordinate>(Material, -600, 100);
+		UMaterialExpressionConstant2Vector* Center = CreateMaterialExpression<UMaterialExpressionConstant2Vector>(Material, -600, 260);
+		UMaterialExpressionSphereMask* SphereMask = CreateMaterialExpression<UMaterialExpressionSphereMask>(Material, -320, 160);
+		UMaterialExpressionMultiply* EmissiveMultiply = CreateMaterialExpression<UMaterialExpressionMultiply>(Material, -60, -120);
+		UMaterialExpressionMultiply* OpacityMultiply = CreateMaterialExpression<UMaterialExpressionMultiply>(Material, -60, 120);
+
+		if (VertexColor == nullptr
+			|| ColorRgb == nullptr
+			|| ColorAlpha == nullptr
+			|| TextureCoordinate == nullptr
+			|| Center == nullptr
+			|| SphereMask == nullptr
+			|| EmissiveMultiply == nullptr
+			|| OpacityMultiply == nullptr)
+		{
+			Material.PostEditChange();
+			return false;
+		}
+
+		TextureCoordinate->CoordinateIndex = 0;
+		ColorRgb->R = true;
+		ColorRgb->G = true;
+		ColorRgb->B = true;
+		ColorAlpha->A = true;
+		Center->R = 0.5f;
+		Center->G = 0.5f;
+		SphereMask->AttenuationRadius = 0.48f;
+		SphereMask->HardnessPercent = 8.0f;
+
+		UMaterialEditingLibrary::ConnectMaterialExpressions(VertexColor, FString(), ColorRgb, TEXT("Input"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(VertexColor, FString(), ColorAlpha, TEXT("Input"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(TextureCoordinate, FString(), SphereMask, TEXT("A"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(Center, FString(), SphereMask, TEXT("B"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(ColorRgb, FString(), EmissiveMultiply, TEXT("A"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(ColorAlpha, FString(), OpacityMultiply, TEXT("A"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(SphereMask, FString(), OpacityMultiply, TEXT("B"));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(OpacityMultiply, FString(), EmissiveMultiply, TEXT("B"));
+
+		UMaterialEditingLibrary::ConnectMaterialProperty(EmissiveMultiply, FString(), MP_EmissiveColor);
+		UMaterialEditingLibrary::ConnectMaterialProperty(OpacityMultiply, FString(), MP_Opacity);
+		UMaterialEditingLibrary::LayoutMaterialExpressions(&Material);
+		UMaterialEditingLibrary::RecompileMaterial(&Material);
+
+		Material.PostEditChange();
+		Material.MarkPackageDirty();
+		return true;
+	}
+
+	UMaterialInterface* FindOrCreatePointSpriteMaterial(const FString& PackagePath)
+	{
+		const FString AssetName = PointSpriteMaterialAssetName;
+		const FString ObjectPath = MakeObjectPath(PackagePath, AssetName);
+
+		UMaterial* SpriteMaterial = LoadObject<UMaterial>(nullptr, *ObjectPath);
+		if (SpriteMaterial == nullptr)
+		{
+			UMaterialFactoryNew* Factory = NewObject<UMaterialFactoryNew>();
+			FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+			SpriteMaterial = Cast<UMaterial>(AssetToolsModule.Get().CreateAsset(AssetName, PackagePath, UMaterial::StaticClass(), Factory));
+		}
+
+		if (SpriteMaterial != nullptr && !ConfigurePointSpriteMaterial(*SpriteMaterial))
+		{
+			return nullptr;
+		}
+
+		return SpriteMaterial;
+	}
+
+	bool ConfigureSpriteRenderer(FVersionedNiagaraEmitter& Emitter, UMaterialInterface* SpriteMaterial)
+	{
+		FVersionedNiagaraEmitterData* EmitterData = Emitter.GetEmitterData();
+		if (EmitterData == nullptr)
+		{
+			return false;
+		}
+
+		UMaterialInterface* DefaultSpriteMaterial = LoadObject<UMaterialInterface>(nullptr, DefaultSpriteMaterialPath);
+		UMaterialInterface* EffectiveSpriteMaterial = SpriteMaterial != nullptr ? SpriteMaterial : DefaultSpriteMaterial;
+		const FVersionedNiagaraEmitterBase EmitterBase = Emitter.ToBase();
+		bool bConfiguredSpriteRenderer = false;
+
+		for (UNiagaraRendererProperties* RendererProperties : EmitterData->GetRenderers())
+		{
+			UNiagaraSpriteRendererProperties* SpriteRenderer = Cast<UNiagaraSpriteRendererProperties>(RendererProperties);
+			if (SpriteRenderer == nullptr)
+			{
+				continue;
+			}
+
+			SpriteRenderer->Modify();
+			if (EffectiveSpriteMaterial != nullptr)
+			{
+				SpriteRenderer->Material = EffectiveSpriteMaterial;
+			}
+
+#if WITH_EDITORONLY_DATA
+			SpriteRenderer->bIncludeInHitProxy = false;
+#endif
+
+			SpriteRenderer->PositionBinding.SetValue(INiagaraModule::GetVar_Particles_Position().GetName(), EmitterBase, ENiagaraRendererSourceDataMode::Particles);
+			SpriteRenderer->ColorBinding.SetValue(INiagaraModule::GetVar_Particles_Color().GetName(), EmitterBase, ENiagaraRendererSourceDataMode::Particles);
+			SpriteRenderer->DynamicMaterialBinding.SetValue(INiagaraModule::GetVar_Particles_DynamicMaterialParameter().GetName(), EmitterBase, ENiagaraRendererSourceDataMode::Particles);
+			SpriteRenderer->SpriteSizeBinding.SetValue(INiagaraModule::GetVar_Particles_SpriteSize().GetName(), EmitterBase, ENiagaraRendererSourceDataMode::Particles);
+			SpriteRenderer->SortMode = ENiagaraSortMode::ViewDepth;
+			SpriteRenderer->SortPrecision = ENiagaraRendererSortPrecision::High;
+			SpriteRenderer->bSortOnlyWhenTranslucent = true;
+			bConfiguredSpriteRenderer = true;
+		}
+
+		return bConfiguredSpriteRenderer;
+	}
+
+	bool ConfigurePointCloudNiagaraSystem(UNiagaraSystem& System, UMaterialInterface* SpriteMaterial)
 	{
 		System.Modify();
 
@@ -272,6 +433,7 @@ namespace
 		EnsureUserParameter(System, GetPointCountParameter());
 		EnsureUserParameter(System, GetPositionsParameter());
 		EnsureUserParameter(System, GetColorsParameter());
+		EnsureUserParameter(System, GetDynamicMaterialParametersParameter());
 		EnsureUserParameter(System, GetSpriteSizesParameter());
 		EnsureUserParameter(System, GetLifetimeParameter(), reinterpret_cast<const uint8*>(&DefaultLifetime));
 
@@ -281,9 +443,19 @@ namespace
 			return false;
 		}
 
-		if (FVersionedNiagaraEmitterData* EmitterData = SystemViewModel->GetEmitterHandleViewModels()[0]->GetEmitterViewModel()->GetEmitter().GetEmitterData())
+		FVersionedNiagaraEmitter Emitter = SystemViewModel->GetEmitterHandleViewModels()[0]->GetEmitterViewModel()->GetEmitter();
+		if (FVersionedNiagaraEmitterData* EmitterData = Emitter.GetEmitterData())
 		{
 			EmitterData->bLocalSpace = true;
+		}
+		else
+		{
+			return false;
+		}
+
+		if (!ConfigureSpriteRenderer(Emitter, SpriteMaterial))
+		{
+			return false;
 		}
 
 		TArray<UNiagaraStackModuleItem*> ModuleItems = GetAllModuleItems(SystemViewModel);
@@ -329,18 +501,20 @@ namespace
 
 		UNiagaraStackFunctionInput* PositionInput = FindInputByHandleToken(*AssignmentModule, TEXT("Particles.Position"));
 		UNiagaraStackFunctionInput* ColorInput = FindInputByHandleToken(*AssignmentModule, TEXT("Particles.Color"));
+		UNiagaraStackFunctionInput* DynamicMaterialInput = FindInputByHandleToken(*AssignmentModule, TEXT("Particles.DynamicMaterialParameter"));
 		UNiagaraStackFunctionInput* SpriteSizeInput = FindInputByHandleToken(*AssignmentModule, TEXT("Particles.SpriteSize"));
 
-		if (PositionInput == nullptr || ColorInput == nullptr || SpriteSizeInput == nullptr)
+		if (PositionInput == nullptr || ColorInput == nullptr || DynamicMaterialInput == nullptr || SpriteSizeInput == nullptr)
 		{
 			return false;
 		}
 
 		const bool bConfiguredPosition = ConfigureDynamicArrayInput(*PositionInput, SelectPositionFromArrayPath, GetPositionsParameter());
 		const bool bConfiguredColor = ConfigureDynamicArrayInput(*ColorInput, SelectColorFromArrayPath, GetColorsParameter());
+		const bool bConfiguredDynamicMaterial = ConfigureDynamicArrayInput(*DynamicMaterialInput, SelectVector4FromArrayPath, GetDynamicMaterialParametersParameter());
 		const bool bConfiguredSpriteSize = ConfigureDynamicArrayInput(*SpriteSizeInput, SelectVector2FromArrayPath, GetSpriteSizesParameter());
 
-		if (!bConfiguredPosition || !bConfiguredColor || !bConfiguredSpriteSize)
+		if (!bConfiguredPosition || !bConfiguredColor || !bConfiguredDynamicMaterial || !bConfiguredSpriteSize)
 		{
 			return false;
 		}
@@ -350,7 +524,7 @@ namespace
 		return true;
 	}
 
-	UNiagaraSystem* FindOrCreateNiagaraSystem(const FString& PackagePath)
+	UNiagaraSystem* FindOrCreateNiagaraSystem(const FString& PackagePath, UMaterialInterface* SpriteMaterial)
 	{
 		const FString AssetName = NiagaraSystemAssetName;
 		const FString ObjectPath = MakeObjectPath(PackagePath, AssetName);
@@ -373,13 +547,13 @@ namespace
 
 		if (NiagaraSystem != nullptr)
 		{
-			ConfigurePointCloudNiagaraSystem(*NiagaraSystem);
+			ConfigurePointCloudNiagaraSystem(*NiagaraSystem, SpriteMaterial);
 		}
 
 		return NiagaraSystem;
 	}
 
-	void UpdateBlueprintDefaults(UBlueprint& Blueprint, USpzPointCloudAsset& PointCloudAsset, UNiagaraSystem& NiagaraSystem)
+	void UpdateBlueprintDefaults(UBlueprint& Blueprint, USpzPointCloudAsset& PointCloudAsset, UMaterialInterface& SplatMaterial)
 	{
 		FKismetEditorUtilities::CompileBlueprint(&Blueprint);
 
@@ -396,17 +570,20 @@ namespace
 
 		DefaultActor->Modify();
 		DefaultActor->PointCloudAsset = &PointCloudAsset;
-		DefaultActor->NiagaraSystemAsset = &NiagaraSystem;
+		DefaultActor->NiagaraSystemAsset = nullptr;
+		DefaultActor->SplatMaterial = &SplatMaterial;
 		DefaultActor->MaxRenderPoints = FMath::Min(SpzNiagaraParameters::DefaultMaxRenderPoints, PointCloudAsset.GetStoredPointCount());
-		DefaultActor->SpriteSizeMultiplier = 1.0f;
+		DefaultActor->SpriteSizeMultiplier = 3.0f;
 		DefaultActor->ParticleLifetimeSeconds = SpzNiagaraParameters::DefaultParticleLifetimeSeconds;
+		DefaultActor->RenderRotationOffset = FRotator(-90.0f, 0.0f, 0.0f);
+		DefaultActor->bRefreshInConstructionScript = true;
 
 		FBlueprintEditorUtils::MarkBlueprintAsModified(&Blueprint);
 		Blueprint.MarkPackageDirty();
 		FKismetEditorUtilities::CompileBlueprint(&Blueprint);
 	}
 
-	UBlueprint* FindOrCreateBlueprint(USpzPointCloudAsset& PointCloudAsset, UNiagaraSystem& NiagaraSystem)
+	UBlueprint* FindOrCreateBlueprint(USpzPointCloudAsset& PointCloudAsset, UMaterialInterface& SplatMaterial)
 	{
 		const FString PackagePath = FPackageName::GetLongPackagePath(PointCloudAsset.GetOutermost()->GetName());
 		const FString AssetName = FString::Printf(TEXT("%s%s"), NiagaraBlueprintPrefix, *PointCloudAsset.GetName());
@@ -433,7 +610,7 @@ namespace
 
 		if (Blueprint != nullptr)
 		{
-			UpdateBlueprintDefaults(*Blueprint, PointCloudAsset, NiagaraSystem);
+			UpdateBlueprintDefaults(*Blueprint, PointCloudAsset, SplatMaterial);
 		}
 
 		return Blueprint;
@@ -443,11 +620,11 @@ namespace
 void FSpzEditorUtilities::GeneratePointCloudSupportAssets(USpzPointCloudAsset& PointCloudAsset)
 {
 	const FString PackagePath = FPackageName::GetLongPackagePath(PointCloudAsset.GetOutermost()->GetName());
-	UNiagaraSystem* NiagaraSystem = FindOrCreateNiagaraSystem(PackagePath);
-	if (NiagaraSystem == nullptr)
+	UMaterialInterface* SpriteMaterial = FindOrCreatePointSpriteMaterial(PackagePath);
+	if (SpriteMaterial == nullptr)
 	{
 		return;
 	}
 
-	FindOrCreateBlueprint(PointCloudAsset, *NiagaraSystem);
+	FindOrCreateBlueprint(PointCloudAsset, *SpriteMaterial);
 }

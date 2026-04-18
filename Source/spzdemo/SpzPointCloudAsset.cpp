@@ -12,22 +12,49 @@ bool USpzPointCloudAsset::HasRenderableData() const
 {
 	return Positions.Num() > 0
 		&& Positions.Num() == Colors.Num()
-		&& Positions.Num() == Sizes.Num();
+		&& Positions.Num() == AxisX.Num()
+		&& Positions.Num() == AxisY.Num()
+		&& Positions.Num() == AxisZ.Num();
 }
 
-void USpzPointCloudAsset::SetRenderData(int32 InSourcePointCount, TArray<FVector3f>&& InPositions, TArray<FLinearColor>&& InColors, TArray<float>&& InSizes)
+void USpzPointCloudAsset::AppendPointToRenderPoints(int32 Index, float ScaleMultiplier, TArray<FSpzSplatRenderPoint>& OutPoints) const
+{
+	FSpzSplatRenderPoint& RenderPoint = OutPoints.AddDefaulted_GetRef();
+	RenderPoint.Position = Positions[Index];
+	RenderPoint.Color = Colors[Index];
+	RenderPoint.AxisX = AxisX[Index] * ScaleMultiplier;
+	RenderPoint.AxisY = AxisY[Index] * ScaleMultiplier;
+	RenderPoint.AxisZ = AxisZ[Index] * ScaleMultiplier;
+}
+
+void USpzPointCloudAsset::SetRenderData(
+	int32 InSourcePointCount,
+	TArray<FVector3f>&& InPositions,
+	TArray<FLinearColor>&& InColors,
+	TArray<FVector3f>&& InAxisX,
+	TArray<FVector3f>&& InAxisY,
+	TArray<FVector3f>&& InAxisZ)
 {
 	SourcePointCount = InSourcePointCount;
 	Positions = MoveTemp(InPositions);
 	Colors = MoveTemp(InColors);
-	Sizes = MoveTemp(InSizes);
+	AxisX = MoveTemp(InAxisX);
+	AxisY = MoveTemp(InAxisY);
+	AxisZ = MoveTemp(InAxisZ);
+	++RenderDataVersion;
 
 	UpdateBounds();
 
-	if (Sizes.Num() > 0)
+	if (AxisX.Num() > 0)
 	{
-		const double SizeSum = Algo::Accumulate(Sizes, 0.0);
-		SuggestedSpriteSize = static_cast<float>(SizeSum / static_cast<double>(Sizes.Num()));
+		double SizeSum = 0.0;
+		for (int32 Index = 0; Index < AxisX.Num(); ++Index)
+		{
+			const float MaxAxis = FMath::Max3(AxisX[Index].Length(), AxisY[Index].Length(), AxisZ[Index].Length());
+			SizeSum += MaxAxis * 6.0;
+		}
+
+		SuggestedSpriteSize = static_cast<float>(SizeSum / static_cast<double>(AxisX.Num()));
 	}
 	else
 	{
@@ -35,11 +62,9 @@ void USpzPointCloudAsset::SetRenderData(int32 InSourcePointCount, TArray<FVector
 	}
 }
 
-void USpzPointCloudAsset::BuildRenderArrays(int32 MaxPoints, float SizeMultiplier, TArray<FVector>& OutPositions, TArray<FLinearColor>& OutColors, TArray<FVector2D>& OutSpriteSizes) const
+void USpzPointCloudAsset::BuildRenderPoints(int32 MaxPoints, float ScaleMultiplier, TArray<FSpzSplatRenderPoint>& OutPoints) const
 {
-	OutPositions.Reset();
-	OutColors.Reset();
-	OutSpriteSizes.Reset();
+	OutPoints.Reset();
 
 	if (!HasRenderableData() || MaxPoints <= 0)
 	{
@@ -48,26 +73,15 @@ void USpzPointCloudAsset::BuildRenderArrays(int32 MaxPoints, float SizeMultiplie
 
 	const int32 TotalPoints = Positions.Num();
 	const int32 TargetPointCount = FMath::Min(MaxPoints, TotalPoints);
-	const float SafeMultiplier = FMath::Max(SizeMultiplier, KINDA_SMALL_NUMBER);
+	const float SafeMultiplier = FMath::Max(ScaleMultiplier, KINDA_SMALL_NUMBER);
 
-	OutPositions.Reserve(TargetPointCount);
-	OutColors.Reserve(TargetPointCount);
-	OutSpriteSizes.Reserve(TargetPointCount);
-
-	const auto AppendPoint = [this, SafeMultiplier, &OutPositions, &OutColors, &OutSpriteSizes](int32 Index)
-	{
-		OutPositions.Add(FVector(Positions[Index]));
-		OutColors.Add(Colors[Index]);
-
-		const float SpriteSize = FMath::Max(1.0f, Sizes[Index] * SafeMultiplier);
-		OutSpriteSizes.Add(FVector2D(SpriteSize, SpriteSize));
-	};
+	OutPoints.Reserve(TargetPointCount);
 
 	if (TargetPointCount == TotalPoints)
 	{
 		for (int32 Index = 0; Index < TotalPoints; ++Index)
 		{
-			AppendPoint(Index);
+			AppendPointToRenderPoints(Index, SafeMultiplier, OutPoints);
 		}
 		return;
 	}
@@ -78,7 +92,88 @@ void USpzPointCloudAsset::BuildRenderArrays(int32 MaxPoints, float SizeMultiplie
 	for (int32 OutputIndex = 0; OutputIndex < TargetPointCount; ++OutputIndex)
 	{
 		const int32 SourceIndex = FMath::Clamp(static_cast<int32>(Cursor), 0, TotalPoints - 1);
-		AppendPoint(SourceIndex);
+		AppendPointToRenderPoints(SourceIndex, SafeMultiplier, OutPoints);
+		Cursor += Step;
+	}
+}
+
+void USpzPointCloudAsset::BuildRenderPointsForView(
+	int32 MaxPoints,
+	float ScaleMultiplier,
+	const FVector& ViewLocationLocal,
+	const FVector& ViewForwardLocal,
+	float HorizontalFovDegrees,
+	float FovScale,
+	TArray<FSpzSplatRenderPoint>& OutPoints) const
+{
+	OutPoints.Reset();
+
+	if (!HasRenderableData() || MaxPoints <= 0)
+	{
+		return;
+	}
+
+	const int32 TotalPoints = Positions.Num();
+	const int32 TargetPointCount = FMath::Min(MaxPoints, TotalPoints);
+	const float SafeMultiplier = FMath::Max(ScaleMultiplier, KINDA_SMALL_NUMBER);
+	FVector SafeViewForward = ViewForwardLocal.GetSafeNormal();
+	if (SafeViewForward.IsNearlyZero())
+	{
+		SafeViewForward = FVector::ForwardVector;
+	}
+	const float EffectiveHalfFovDegrees = FMath::Clamp(HorizontalFovDegrees * 0.5f * FMath::Max(FovScale, 0.1f), 5.0f, 89.5f);
+	const float CosThreshold = FMath::Cos(FMath::DegreesToRadians(EffectiveHalfFovDegrees));
+	const float CosThresholdSq = CosThreshold * CosThreshold;
+
+	TArray<int32> VisibleIndices;
+	VisibleIndices.Reserve(FMath::Min(TotalPoints, TargetPointCount * 4));
+
+	for (int32 Index = 0; Index < TotalPoints; ++Index)
+	{
+		const FVector ToPoint = FVector(Positions[Index]) - ViewLocationLocal;
+		const float DistanceSq = ToPoint.SizeSquared();
+		if (DistanceSq <= KINDA_SMALL_NUMBER)
+		{
+			VisibleIndices.Add(Index);
+			continue;
+		}
+
+		const float ForwardDistance = FVector::DotProduct(ToPoint, SafeViewForward);
+		if (ForwardDistance <= 0.0f)
+		{
+			continue;
+		}
+
+		if ((ForwardDistance * ForwardDistance) >= (DistanceSq * CosThresholdSq))
+		{
+			VisibleIndices.Add(Index);
+		}
+	}
+
+	if (VisibleIndices.Num() == 0)
+	{
+		return;
+	}
+
+	const int32 OutputPointCount = FMath::Min(TargetPointCount, VisibleIndices.Num());
+	OutPoints.Reserve(OutputPointCount);
+
+	if (OutputPointCount == VisibleIndices.Num())
+	{
+		for (int32 SourceIndex : VisibleIndices)
+		{
+			AppendPointToRenderPoints(SourceIndex, SafeMultiplier, OutPoints);
+		}
+		return;
+	}
+
+	const double Step = static_cast<double>(VisibleIndices.Num()) / static_cast<double>(OutputPointCount);
+	double Cursor = 0.0;
+
+	for (int32 OutputIndex = 0; OutputIndex < OutputPointCount; ++OutputIndex)
+	{
+		const int32 VisibleIndex = FMath::Clamp(static_cast<int32>(Cursor), 0, VisibleIndices.Num() - 1);
+		AppendPointToRenderPoints(VisibleIndices[VisibleIndex], SafeMultiplier, OutPoints);
 		Cursor += Step;
 	}
 }
@@ -108,9 +203,16 @@ void USpzPointCloudAsset::UpdateBounds()
 	}
 
 	FBox Box(EForceInit::ForceInit);
-	for (const FVector3f& Position : Positions)
+	for (int32 Index = 0; Index < Positions.Num(); ++Index)
 	{
-		Box += FVector(Position);
+		const FVector Position = FVector(Positions[Index]);
+		const FVector AxisExtent(
+			FMath::Abs(AxisX[Index].X) + FMath::Abs(AxisY[Index].X) + FMath::Abs(AxisZ[Index].X),
+			FMath::Abs(AxisX[Index].Y) + FMath::Abs(AxisY[Index].Y) + FMath::Abs(AxisZ[Index].Y),
+			FMath::Abs(AxisX[Index].Z) + FMath::Abs(AxisY[Index].Z) + FMath::Abs(AxisZ[Index].Z));
+
+		Box += Position - AxisExtent;
+		Box += Position + AxisExtent;
 	}
 
 	BoundsOrigin = Box.GetCenter();

@@ -25,6 +25,7 @@ public class spzdemoEditor : ModuleRules
 				"AssetTools",
 				"EditorFramework",
 				"Kismet",
+				"MaterialEditor",
 				"Niagara",
 				"NiagaraEditor",
 				"UnrealEd"

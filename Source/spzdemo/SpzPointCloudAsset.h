@@ -8,6 +8,15 @@
 
 class UAssetImportData;
 
+struct FSpzSplatRenderPoint
+{
+	FVector3f Position = FVector3f::ZeroVector;
+	FLinearColor Color = FLinearColor::White;
+	FVector3f AxisX = FVector3f::ZeroVector;
+	FVector3f AxisY = FVector3f::ZeroVector;
+	FVector3f AxisZ = FVector3f::ZeroVector;
+};
+
 UCLASS(BlueprintType)
 class SPZDEMO_API USpzPointCloudAsset : public UObject
 {
@@ -27,10 +36,30 @@ public:
 	}
 
 	UFUNCTION(BlueprintPure, Category = "SPZ")
+	int32 GetRenderDataVersion() const
+	{
+		return RenderDataVersion;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "SPZ")
 	bool HasRenderableData() const;
 
-	void SetRenderData(int32 InSourcePointCount, TArray<FVector3f>&& InPositions, TArray<FLinearColor>&& InColors, TArray<float>&& InSizes);
-	void BuildRenderArrays(int32 MaxPoints, float SizeMultiplier, TArray<FVector>& OutPositions, TArray<FLinearColor>& OutColors, TArray<FVector2D>& OutSpriteSizes) const;
+	void SetRenderData(
+		int32 InSourcePointCount,
+		TArray<FVector3f>&& InPositions,
+		TArray<FLinearColor>&& InColors,
+		TArray<FVector3f>&& InAxisX,
+		TArray<FVector3f>&& InAxisY,
+		TArray<FVector3f>&& InAxisZ);
+	void BuildRenderPoints(int32 MaxPoints, float ScaleMultiplier, TArray<FSpzSplatRenderPoint>& OutPoints) const;
+	void BuildRenderPointsForView(
+		int32 MaxPoints,
+		float ScaleMultiplier,
+		const FVector& ViewLocationLocal,
+		const FVector& ViewForwardLocal,
+		float HorizontalFovDegrees,
+		float FovScale,
+		TArray<FSpzSplatRenderPoint>& OutPoints) const;
 
 #if WITH_EDITOR
 	void UpdateImportData(const FString& SourceFilename);
@@ -55,7 +84,16 @@ public:
 	TArray<FLinearColor> Colors;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SPZ|Data", AdvancedDisplay)
-	TArray<float> Sizes;
+	TArray<FVector3f> AxisX;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SPZ|Data", AdvancedDisplay)
+	TArray<FVector3f> AxisY;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SPZ|Data", AdvancedDisplay)
+	TArray<FVector3f> AxisZ;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SPZ|Data", AdvancedDisplay)
+	int32 RenderDataVersion = 0;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(VisibleAnywhere, Instanced, Category = "Import Settings")
@@ -63,5 +101,6 @@ public:
 #endif
 
 private:
+	void AppendPointToRenderPoints(int32 Index, float ScaleMultiplier, TArray<FSpzSplatRenderPoint>& OutPoints) const;
 	void UpdateBounds();
 };
