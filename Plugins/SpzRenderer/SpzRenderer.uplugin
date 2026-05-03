@@ -1,0 +1,22 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "SPZ Renderer",
+	"Description": "Imports SPZ Gaussian splat files into cooked assets and provides BP-facing placement components.",
+	"Category": "Rendering",
+	"CreatedBy": "Codex",
+	"CanContainContent": false,
+	"Modules": [
+		{
+			"Name": "SpzRuntime",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "SpzEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
