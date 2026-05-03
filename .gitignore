@@ -24,11 +24,6 @@
 # VS Code
 /.vscode/
 
-# Unreal Engine plugin generated folders
-/Plugins/*/Binaries/
-/Plugins/*/Intermediate/
-
 # Crash dumps and logs
 *.log
 *.dmp
-scene.spz
